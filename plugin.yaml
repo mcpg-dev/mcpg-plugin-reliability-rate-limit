@@ -1,0 +1,12 @@
+schema: mcpg.dev/plugin/v1
+id: dev.mcpg.rate-limit
+name: Rate Limiter
+license: Apache-2.0
+description: |
+  Token-bucket rate limiter with configurable keys (identity, IP,
+  tool) and per-key refill policy. Returns a Deny decision with
+  Retry-After hint once a bucket is empty.
+class: tool_gate
+runtime: native-cdylib-v1
+protocol_version: "1.0"
+required_capabilities: []

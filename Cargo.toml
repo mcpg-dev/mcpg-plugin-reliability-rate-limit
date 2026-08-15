@@ -1,0 +1,50 @@
+[package]
+name = "mcpg-plugin-reliability-rate-limit"
+version = "0.1.0-alpha.15"
+license = "Apache-2.0"
+edition = "2024"
+description = "Rate-limiting ToolGate plugin for MCPG gateway — per-identity, per-tool, per-session throttling"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+# `static-firstparty` exposes
+# `HostHandle::from_services` so the L.7 integration test (and
+# any future Recorder-style host doubles) can construct a host
+# handle from a `HostServices` trait object instead of the FFI
+# `HostHandleRef`. The cdylib build is unaffected — the feature
+# only gates the in-process construction surface.
+mcpg-plugin-sdk = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13", features = ["static-firstparty"] }
+mcpg-glob = { git = "https://github.com/mcpg-dev/mcpg-glob", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+dashmap = "6"
+metrics = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Runtime handle for spawning audit emission on a
+# blocking worker (the `HostHandle::audit_event` bridge does an
+# internal `Handle::block_on` which would panic if called directly
+# from the runtime worker dispatching `evaluate_pre`).
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = "0.1"
+
+[dev-dependencies]
+# Recorder-based HostHandle integration tests
+# need the host-side `HostServices` trait to build a test double.
+
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+
+[features]
+# Default ON so standalone `cargo build -p <this>` still produces a
+# working cdylib. Disabled by the gateway's path-dep so multiple
+# plugins linked together don't all export `mcpg_plugin_register`
+# (linker collision).
+default = ["cdylib-export"]
+cdylib-export = []
+# Declared so the SDK's per-kind `build_static` accessor
+# (gated `#[cfg(feature = "static-firstparty")]`) does not trigger
+# `unexpected_cfgs` in consumer compilation. Empty: this plugin is
+# consumed as a cdylib, not via the static-firstparty fast path.
+static-firstparty = []

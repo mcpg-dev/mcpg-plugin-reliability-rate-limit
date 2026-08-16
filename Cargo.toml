@@ -1,6 +1,6 @@
 [package]
 name = "mcpg-plugin-reliability-rate-limit"
-version = "0.1.0-alpha.15"
+version = "0.1.0-alpha.16"
 license = "Apache-2.0"
 edition = "2024"
 description = "Rate-limiting ToolGate plugin for MCPG gateway — per-identity, per-tool, per-session throttling"
@@ -9,15 +9,15 @@ description = "Rate-limiting ToolGate plugin for MCPG gateway — per-identity, 
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14" }
 # `static-firstparty` exposes
 # `HostHandle::from_services` so the L.7 integration test (and
 # any future Recorder-style host doubles) can construct a host
 # handle from a `HostServices` trait object instead of the FFI
 # `HostHandleRef`. The cdylib build is unaffected — the feature
 # only gates the in-process construction surface.
-mcpg-plugin-sdk = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13", features = ["static-firstparty"] }
-mcpg-glob = { git = "https://github.com/mcpg-dev/mcpg-glob", tag = "v0.1.0-beta.13", version = "=0.1.0-beta.13" }
+mcpg-plugin-sdk = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14", features = ["static-firstparty"] }
+mcpg-glob = { git = "https://github.com/mcpg-dev/mcpg-glob", tag = "v0.1.0-beta.14", version = "=0.1.0-beta.14" }
 dashmap = "6"
 metrics = "0.24"
 serde = { version = "1.0", features = ["derive"] }

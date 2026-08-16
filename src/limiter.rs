@@ -190,11 +190,13 @@ mod tests {
     #[test]
     fn exhaustion_denies() {
         let state = RateLimitState::new();
+        // Refill slow enough (100 s/token) that a stalled test runner cannot
+        // regrow a token between the draining loop and the denial check.
         for _ in 0..5 {
-            let r = state.check("key1", 5, 1.0, 60);
+            let r = state.check("key1", 5, 0.01, 60);
             assert!(r.allowed);
         }
-        let r = state.check("key1", 5, 1.0, 60);
+        let r = state.check("key1", 5, 0.01, 60);
         assert!(!r.allowed);
         assert!(r.retry_after_secs > 0.0);
     }

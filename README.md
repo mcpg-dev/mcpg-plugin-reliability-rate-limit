@@ -42,7 +42,7 @@ plugins:
     source: { path: ./plugins/libmcpg_plugin_reliability_rate_limit.so }
     # or, platform-agnostic — the gateway resolves the artifact for its own
     # os/arch/libc at boot:
-    # source: { oci: ghcr.io/mcpg-dev/source-code/plugins/rate-limit:protocol-1 }
+    # source: { oci: ghcr.io/mcpg-dev/plugins/rate-limit }
     config:
       default_limit: 100              # tokens per window for unmatched tools
       default_window_ms: 60000

@@ -1,6 +1,6 @@
 [package]
 name = "mcpg-plugin-reliability-rate-limit"
-version = "0.1.0-alpha.49"
+version = "0.1.0-alpha.50"
 license = "Apache-2.0"
 edition = "2024"
 description = "Rate-limiting ToolGate plugin for MCPG gateway — per-identity, per-tool, per-session throttling"
@@ -16,7 +16,7 @@ mcpg-plugin-protocol = { git = "https://github.com/mcpg-dev/mcpg-plugin-protocol
 # handle from a `HostServices` trait object instead of the FFI
 # `HostHandleRef`. The cdylib build is unaffected — the feature
 # only gates the in-process construction surface.
-mcpg-plugin-sdk = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.47", version = "=0.1.0-beta.47", features = ["static-firstparty"] }
+mcpg-plugin-sdk = { git = "https://github.com/mcpg-dev/mcpg-plugin-sdk", tag = "v0.1.0-beta.48", version = "=0.1.0-beta.48", features = ["static-firstparty"] }
 mcpg-glob = { git = "https://github.com/mcpg-dev/mcpg-glob", tag = "v0.1.0-beta.42", version = "=0.1.0-beta.42" }
 dashmap = "6"
 metrics = "0.24"

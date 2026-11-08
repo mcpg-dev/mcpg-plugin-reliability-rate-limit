@@ -121,6 +121,17 @@ pub struct RateLimitPlugin {
     host_handle: OnceLock<HostHandle>,
 }
 
+/// The bucket parameters that apply to one call.
+#[derive(Clone, Copy)]
+struct EffectiveRule {
+    /// Index of the matching rule; `None` for the plugin-wide defaults.
+    index: Option<usize>,
+    limit: u64,
+    window_ms: u64,
+    burst: Option<u64>,
+    scope: RateLimitScope,
+}
+
 struct CompiledRule {
     tool_patterns: Vec<String>,
     scope: RateLimitScope,
@@ -261,12 +272,29 @@ impl RateLimitPlugin {
         }
     }
 
-    fn find_matching_rule(&self, tool_name: &str) -> Option<&CompiledRule> {
-        self.compiled_rules.iter().find(|rule| {
+    /// The first rule whose patterns match `tool_name`, with its index.
+    fn find_matching_rule(&self, tool_name: &str) -> Option<(usize, &CompiledRule)> {
+        self.compiled_rules.iter().enumerate().find(|(_, rule)| {
             rule.tool_patterns
                 .iter()
                 .any(|pattern| glob_match(pattern, tool_name))
         })
+    }
+
+    /// The bucket a call draws from: the scope key inside the namespace of
+    /// the rule that matched (or of the defaults), so two rules never
+    /// share a bucket even when their scope keys are equal.
+    fn bucket_key(
+        &self,
+        ctx: &PluginContext,
+        rule: Option<usize>,
+        scope: RateLimitScope,
+    ) -> String {
+        let scope_key = self.resolve_key(ctx, scope);
+        match rule {
+            Some(index) => format!("rule{index}/{scope_key}"),
+            None => format!("default/{scope_key}"),
+        }
     }
 }
 
@@ -313,15 +341,15 @@ impl SyncToolGate for RateLimitPlugin {
         // worst (one principal per series). The bucket key itself
         // goes only in audit details (forensic drill-down on a
         // reject).
-        let (eff_limit, eff_window_ms, eff_burst, eff_scope) = self.effective_rule(&ctx.tool_name);
+        let rule = self.effective_rule(&ctx.tool_name);
         let host_span = self.host_handle().map(|h| {
             h.span(
                 "rate_limit.check",
                 serde_json::json!({
                     "tool": ctx.tool_name,
-                    "scope": scope_label(eff_scope),
-                    "limit": eff_limit,
-                    "window_ms": eff_window_ms,
+                    "scope": scope_label(rule.scope),
+                    "limit": rule.limit,
+                    "window_ms": rule.window_ms,
                     "request_id": ctx.request_id,
                 }),
             )
@@ -329,7 +357,7 @@ impl SyncToolGate for RateLimitPlugin {
 
         let started = std::time::Instant::now();
         let (decision, outcome_label, audit_payload) =
-            self.check_rate_limit_with_outcome(ctx, eff_limit, eff_window_ms, eff_burst, eff_scope);
+            self.check_rate_limit_with_outcome(ctx, &rule);
         let elapsed = started.elapsed();
         metrics::histogram!("mcpg_rate_limit_evaluate_ms").record(elapsed.as_millis() as f64);
 
@@ -364,16 +392,23 @@ impl RateLimitPlugin {
     /// first matching per-tool rule, or the plugin-wide defaults.
     /// Pulled out so the host-span attrs and the check path read
     /// the same rule.
-    fn effective_rule(&self, tool_name: &str) -> (u64, u64, Option<u64>, RateLimitScope) {
-        if let Some(rule) = self.find_matching_rule(tool_name) {
-            (rule.limit, rule.window_ms, rule.burst, rule.scope)
+    fn effective_rule(&self, tool_name: &str) -> EffectiveRule {
+        if let Some((index, rule)) = self.find_matching_rule(tool_name) {
+            EffectiveRule {
+                index: Some(index),
+                limit: rule.limit,
+                window_ms: rule.window_ms,
+                burst: rule.burst,
+                scope: rule.scope,
+            }
         } else {
-            (
-                self.config.default_limit,
-                self.config.default_window_ms,
-                self.config.default_burst,
-                RateLimitScope::PerPrincipal,
-            )
+            EffectiveRule {
+                index: None,
+                limit: self.config.default_limit,
+                window_ms: self.config.default_window_ms,
+                burst: self.config.default_burst,
+                scope: RateLimitScope::PerPrincipal,
+            }
         }
     }
 
@@ -384,12 +419,16 @@ impl RateLimitPlugin {
     fn check_rate_limit_with_outcome(
         &self,
         ctx: &PluginContext,
-        limit: u64,
-        window_ms: u64,
-        burst: Option<u64>,
-        scope: RateLimitScope,
+        rule: &EffectiveRule,
     ) -> (GateDecision, &'static str, serde_json::Value) {
-        let key = self.resolve_key(ctx, scope);
+        let EffectiveRule {
+            index,
+            limit,
+            window_ms,
+            burst,
+            scope,
+        } = *rule;
+        let key = self.bucket_key(ctx, index, scope);
         let result = self.check_limit(&key, limit, window_ms, burst);
 
         // Internal counter — keep cardinality identical to the
@@ -832,6 +871,43 @@ mod tests {
             &serde_json::json!({}),
         );
         assert!(allowed.is_allow());
+    }
+
+    #[test]
+    fn rules_with_the_same_scope_keep_separate_buckets() {
+        let plugin = RateLimitPlugin::from_config(&serde_json::json!({
+            "default_limit": 2,
+            "default_window_ms": 60000,
+            "rules": [
+                { "tools": ["input.*"], "scope": "global", "limit": 2, "window_ms": 60000 },
+                { "tools": ["screen.*"], "scope": "global", "limit": 2, "window_ms": 60000 },
+                { "tools": ["ui.*"], "scope": "per_principal", "limit": 2, "window_ms": 60000 }
+            ]
+        }))
+        .unwrap();
+        let call = |tool: &str| {
+            plugin
+                .evaluate_pre(
+                    &test_ctx(tool, None, Some("s-1")),
+                    &serde_json::json!({}),
+                    None,
+                    &serde_json::json!({}),
+                )
+                .is_allow()
+        };
+
+        assert!(call("input.click") && call("input.key"));
+        assert!(!call("input.click"), "the input rule's own bucket is empty");
+        assert!(
+            call("screen.shot"),
+            "another global rule has a bucket of its own"
+        );
+        assert!(call("ui.tree") && call("ui.find"));
+        assert!(!call("ui.tree"), "the ui rule's own bucket is empty");
+        assert!(
+            call("other.tool"),
+            "the defaults share no bucket with a per_principal rule"
+        );
     }
 
     #[test]

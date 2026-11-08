@@ -85,7 +85,9 @@ the MCP session id and then to a shared `_anon` bucket for callers with neither 
 so unauthenticated traffic shares one bucket unless sessions are in play.
 `per_session` keys on the session id with a shared `_no_session` fallback.
 `per_principal_tool` combines subject and tool. `per_tool` ignores the caller
-entirely, and `global` puts every caller and tool in one bucket.
+entirely, and `global` puts every caller and every tool the rule matches in one
+bucket. Each rule, and the defaults, keep their own buckets: two `global` rules
+never share a bucket, and neither do a `per_principal` rule and the defaults.
 
 **Capacity versus rate.** Capacity is `burst` when set, `limit` otherwise, and it
 is what a cold bucket starts with — a rule of `limit: 10, burst: 20` admits 20

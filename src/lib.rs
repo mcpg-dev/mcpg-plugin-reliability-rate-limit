@@ -17,6 +17,9 @@ use std::sync::{Arc, OnceLock};
 
 const PLUGIN_ID: &str = "dev.mcpg.rate-limit";
 
+/// The one bucket key every anonymous caller shares.
+const ANON_KEY: &str = "_anon";
+
 pub use limiter::{RateLimitState, TokenBucket};
 
 // ---------------------------------------------------------------------------
@@ -86,14 +89,15 @@ pub struct RateLimitRuleConfig {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitScope {
-    /// Key = principal_id (unauthenticated uses session_id fallback).
+    /// Key = principal_id; anonymous callers share `_anon`.
     #[default]
     PerPrincipal,
     /// Key = tool_name.
     PerTool,
-    /// Key = principal_id:tool_name.
+    /// Key = principal_id:tool_name; anonymous callers share `_anon`.
     PerPrincipalTool,
-    /// Key = session_id.
+    /// Key = session_id of an identified caller; anonymous callers share
+    /// `_anon`, because their session id is fresh on every request.
     PerSession,
     /// Single global bucket (no per-user split).
     Global,
@@ -238,36 +242,28 @@ impl RateLimitPlugin {
     ) -> LimitResult {
         let capacity = burst.unwrap_or(limit);
         // tokens per MILLISECOND — window_ms is milliseconds, and refill()
-        // accrues `elapsed_ms * refill_rate`. (Previously labeled "per second"
-        // and accrued against elapsed *seconds*, a 1000x error that refilled
-        // the bucket 1000x too slowly = silently far more restrictive than
-        // the configured `limit` per `window_ms`.)
+        // accrues `elapsed_ms * refill_rate`.
         let refill_rate = limit as f64 / window_ms as f64;
         self.state.check(key, capacity, refill_rate, window_ms)
     }
 
+    /// An anonymous caller's session id is fresh on every request, so no
+    /// scope keys on it: anonymous callers share the `_anon` bucket.
     fn resolve_key(&self, ctx: &PluginContext, scope: RateLimitScope) -> String {
+        let principal = ctx.identity.subject_id.as_deref();
         match scope {
-            RateLimitScope::PerPrincipal => ctx
-                .identity
-                .subject_id
-                .clone()
-                .or_else(|| ctx.session_id.clone())
-                .unwrap_or_else(|| "_anon".into()),
+            RateLimitScope::PerPrincipal => principal.unwrap_or(ANON_KEY).to_owned(),
             RateLimitScope::PerTool => ctx.tool_name.clone(),
             RateLimitScope::PerPrincipalTool => {
-                let principal = ctx
-                    .identity
-                    .subject_id
-                    .as_deref()
-                    .or(ctx.session_id.as_deref())
-                    .unwrap_or("_anon");
-                format!("{}:{}", principal, ctx.tool_name)
+                format!("{}:{}", principal.unwrap_or(ANON_KEY), ctx.tool_name)
             }
-            RateLimitScope::PerSession => ctx
-                .session_id
-                .clone()
-                .unwrap_or_else(|| "_no_session".into()),
+            RateLimitScope::PerSession => match principal {
+                None => ANON_KEY.to_owned(),
+                Some(_) => ctx
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| "_no_session".into()),
+            },
             RateLimitScope::Global => "_global".into(),
         }
     }
@@ -999,23 +995,93 @@ mod tests {
         assert!(!denied.is_allow());
     }
 
+    /// Each anonymous request carries a fresh session id; a fresh id must
+    /// not mean a fresh bucket.
     #[test]
-    fn anonymous_uses_session_fallback() {
+    fn anonymous_callers_share_one_bucket_whatever_their_session() {
         let plugin = RateLimitPlugin::from_config(&serde_json::json!({
             "default_limit": 2,
             "default_window_ms": 60
         }))
         .unwrap();
 
-        let ctx = test_ctx("tool", None, Some("session-anon"));
-
-        for _ in 0..2 {
+        for session in ["ephemeral-1", "ephemeral-2"] {
+            let ctx = test_ctx("tool", None, Some(session));
             let d = plugin.evaluate_pre(&ctx, &serde_json::json!({}), None, &serde_json::json!({}));
             assert!(d.is_allow());
         }
+        let ctx = test_ctx("tool", None, Some("ephemeral-3"));
         let denied =
             plugin.evaluate_pre(&ctx, &serde_json::json!({}), None, &serde_json::json!({}));
         assert!(!denied.is_allow());
+    }
+
+    #[test]
+    fn per_session_scope_puts_anonymous_callers_in_one_bucket() {
+        let plugin = RateLimitPlugin::from_config(&serde_json::json!({
+            "rules": [{
+                "tools": ["*"],
+                "scope": "per_session",
+                "limit": 2,
+                "window_ms": 60
+            }]
+        }))
+        .unwrap();
+
+        for session in ["ephemeral-1", "ephemeral-2"] {
+            let ctx = test_ctx("tool", None, Some(session));
+            let d = plugin.evaluate_pre(&ctx, &serde_json::json!({}), None, &serde_json::json!({}));
+            assert!(d.is_allow());
+        }
+        let ctx = test_ctx("tool", None, Some("ephemeral-3"));
+        let denied =
+            plugin.evaluate_pre(&ctx, &serde_json::json!({}), None, &serde_json::json!({}));
+        assert!(!denied.is_allow());
+
+        // An identified caller keeps its own session bucket.
+        let ctx = test_ctx("tool", Some("user-1"), Some("session-1"));
+        let allowed =
+            plugin.evaluate_pre(&ctx, &serde_json::json!({}), None, &serde_json::json!({}));
+        assert!(allowed.is_allow());
+    }
+
+    #[test]
+    fn no_scope_keys_an_anonymous_caller_on_its_session_id() {
+        let plugin = RateLimitPlugin::from_config(&serde_json::json!({})).unwrap();
+        let anon = test_ctx("tool", None, Some("ephemeral-9"));
+        assert_eq!(
+            plugin.resolve_key(&anon, RateLimitScope::PerPrincipal),
+            "_anon"
+        );
+        assert_eq!(
+            plugin.resolve_key(&anon, RateLimitScope::PerPrincipalTool),
+            "_anon:tool"
+        );
+        assert_eq!(
+            plugin.resolve_key(&anon, RateLimitScope::PerSession),
+            "_anon"
+        );
+        assert_eq!(plugin.resolve_key(&anon, RateLimitScope::PerTool), "tool");
+        assert_eq!(plugin.resolve_key(&anon, RateLimitScope::Global), "_global");
+
+        let user = test_ctx("tool", Some("user-1"), Some("session-1"));
+        assert_eq!(
+            plugin.resolve_key(&user, RateLimitScope::PerPrincipal),
+            "user-1"
+        );
+        assert_eq!(
+            plugin.resolve_key(&user, RateLimitScope::PerPrincipalTool),
+            "user-1:tool"
+        );
+        assert_eq!(
+            plugin.resolve_key(&user, RateLimitScope::PerSession),
+            "session-1"
+        );
+        let user_without_session = test_ctx("tool", Some("user-1"), None);
+        assert_eq!(
+            plugin.resolve_key(&user_without_session, RateLimitScope::PerSession),
+            "_no_session"
+        );
     }
 
     #[test]

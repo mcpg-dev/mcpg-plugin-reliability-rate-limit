@@ -4,7 +4,7 @@
 
 Token-bucket rate limiter for MCPG tool calls. Each request draws one token from
 a bucket chosen by the matching rule's scope — the calling principal, the tool,
-the principal-and-tool pair, the MCP session, or a single global bucket — and a
+the principal-and-tool pair, the gateway session, or a single global bucket — and a
 drained bucket answers HTTP 429 with a `retry_after_secs` hint instead of
 reaching the backend. Reach for it to cap spend on expensive tools, to keep one
 noisy caller from starving the rest, or to put a hard ceiling on a shared
@@ -80,11 +80,16 @@ block refuses the plugin at boot rather than quietly degrading to permissive
 defaults, so a typo in a limit cannot silently open the gate.
 
 ## Operations
-**Bucket keys.** `per_principal` keys on the caller's subject id, falling back to
-the MCP session id and then to a shared `_anon` bucket for callers with neither —
-so unauthenticated traffic shares one bucket unless sessions are in play.
-`per_session` keys on the session id with a shared `_no_session` fallback.
-`per_principal_tool` combines subject and tool. `per_tool` ignores the caller
+**Bucket keys.** `per_principal` keys on the caller's subject id; every
+anonymous caller shares one `_anon` bucket. `per_session` keys an identified
+caller on its gateway session id (with a shared `_no_session` fallback) and
+puts anonymous callers in the shared `_anon` bucket too: an anonymous caller's
+session id is fresh on every request, so it would otherwise never run out.
+With a synthetic-session key, a verified caller holds one session id per
+client name its requests carry, and the client chooses that name, so a caller
+can split a `per_session` bucket; bound a principal with `per_principal`. Per-IP limits for anonymous traffic belong to the gateway's
+`gateway.server.anonymous_rate_limit_per_min`. `per_principal_tool` combines subject (or
+`_anon`) and tool. `per_tool` ignores the caller
 entirely, and `global` puts every caller and every tool the rule matches in one
 bucket. Each rule, and the defaults, keep their own buckets: two `global` rules
 never share a bucket, and neither do a `per_principal` rule and the defaults.
